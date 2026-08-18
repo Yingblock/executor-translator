@@ -1,5 +1,5 @@
 """
-executor-translator — 执行者-转译者双模型插件 v0.1.0
+executor-translator — 执行者-转译者双模型插件 v0.1.1
 
 架构
 ----
@@ -629,14 +629,41 @@ def _list_recent_translations(limit: int = 8):
     return unrated[:limit]
 
 
+def _list_rating_details(limit: int = 10):
+    """倒序返回最近 N 条当前评价快照及其转译内容。"""
+    rows = []
+    try:
+        for verdict in ("good", "bad"):
+            d = _ratings_dir() / verdict
+            if not d.is_dir():
+                continue
+            for path in d.glob("*.json"):
+                try:
+                    rec = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                rec.setdefault("verdict", verdict)
+                rows.append(rec)
+    except Exception:
+        return []
+    rows.sort(key=lambda r: str(r.get("rated_at", "")), reverse=True)
+    return rows[:max(0, limit)]
+
+
+def _latest_unrated_id() -> str:
+    """返回最近一条未评价转译的 ID；没有则返回空字符串。"""
+    rows = _list_recent_translations(1)
+    return str(rows[0].get("id", "")) if rows else ""
+
+
 def _rate_translation(tid: str, verdict: str, note: str = "") -> str:
     """对指定转译落评价：按评价写快照 + 追加索引。返回面向用户的回执。"""
     if verdict not in ("good", "bad"):
         return (f"评价只能是 good 或 bad 喵（用法: /et rate {verdict}…）"
-                if tid else "用法: /et rate good|bad <ID> [备注]")
+                if tid else "用法: /et rate good|bad [ID] [备注]")
     rec = _load_translation(tid)
     if not rec:
-        return f"找不到转译 {tid} 喵（用 /et rate 列出最近可评价的）"
+        return f"找不到转译 {tid} 喵（用 /et rate [数字] 查看评价详情）"
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     snapshot = dict(rec)
     snapshot["verdict"] = verdict
@@ -807,32 +834,39 @@ def _cmd_et(raw_args: str):
             return f"转译管线测试失败喵：{exc}"
 
     if sub in ("rate", "r"):
-        # 无参数 → 列出最近可评价项；带参数 → 评价/撤销
+        # 无参数/数字参数 → 查看最近评价详情；good/bad → 评价
         rparts = (rest or "").split(maxsplit=1)
-        if not rparts:
-            rows = _list_recent_translations(8)
+        if not rparts or rparts[0].isdigit():
+            limit = int(rparts[0]) if rparts and rparts[0].isdigit() else 10
+            rows = _list_rating_details(limit)
             if not rows:
-                return ("暂时没有可评价的转译档案喵"
-                        "（先让转译层跑几轮，或 /et test 造一条）")
-            lines = ["最近可评价的转译（用 /et rate good|bad <ID> [备注] 评价）："]
+                return "还没有评价记录喵（用 /et rate good|bad 评价最近一条转译）"
+            lines = [f"最近评价详情（{len(rows)} 条，倒序）："]
             for rec in rows:
-                ts = str(rec.get("ts", ""))[5:16].replace("T", " ")
+                tag = "👍" if rec.get("verdict") == "good" else "👎"
+                ts = str(rec.get("rated_at", rec.get("ts", "")))[5:16].replace("T", " ")
+                note = f" 备注: {rec['note']}" if rec.get("note") else ""
                 lines.append(
-                    f"  {rec['id']} [{ts}] {rec.get('platform', '') or '?'} "
-                    f"in{rec.get('len_in', '?')}→out{rec.get('len_out', '?')} "
-                    f"译文: {_preview(rec.get('translated', ''), 60)}")
+                    f"  {tag} {rec.get('id', '?')} [{ts}]"
+                    f" in{rec.get('len_in', '?')}→out{rec.get('len_out', '?')}"
+                    f"{note}\n    原文: {_preview(rec.get('raw', ''), 80)}"
+                    f"\n    译文: {_preview(rec.get('translated', ''), 80)}")
             lines.append("")
             lines.append(_ratings_summary())
             return "\n".join(lines)
         verdict_or_id = rparts[0].lower()
         if verdict_or_id in ("good", "bad"):
-            # /et rate good|bad <ID> [备注]
+            # /et rate good|bad [<ID>] [备注]；省略 ID 时评价最近一条未评价转译
             tail = (rparts[1] if len(rparts) > 1 else "").strip()
-            tid = tail.split(maxsplit=1)[0] if tail else ""
-            note = tail.split(maxsplit=1)[1].strip() if " " in tail else ""
+            tail_parts = tail.split(maxsplit=1) if tail else []
+            if tail_parts and re.fullmatch(r"T\d+", tail_parts[0], re.IGNORECASE):
+                tid = tail_parts[0].upper()
+                note = tail_parts[1].strip() if len(tail_parts) > 1 else ""
+            else:
+                tid = _latest_unrated_id()
+                note = tail
             if not tid:
-                return ("用法: /et rate good|bad <ID> [备注]\n"
-                        "ID 用 /et rate 查看，例如: /et rate good T0003 语气自然")
+                return "没有可评价的未评价转译记录喵（先让转译层跑一轮）"
             return _rate_translation(tid, verdict_or_id, note)
         # /et rate undo <ID>
         if verdict_or_id == "undo":
@@ -840,8 +874,8 @@ def _cmd_et(raw_args: str):
             if not tid:
                 return "用法: /et rate undo <ID>"
             return _unrate_translation(tid)
-        return ("用法: /et rate              # 列出最近可评价的转译\n"
-                "      /et rate good|bad <ID> [备注]  # 评价（可覆盖）\n"
+        return ("用法: /et rate [数字]       # 查看最近 N 条评价详情（默认 10）\n"
+                "      /et rate good|bad [ID] [备注]  # 评价最近一条或指定 ID\n"
                 "      /et rate undo <ID>    # 撤销评价")
 
     if sub in ("ratings", "rs"):
@@ -864,7 +898,7 @@ def _cmd_et(raw_args: str):
         if which in ("good", "bad"):
             rows = [r for r in rows if r["verdict"] == which]
         if not rows:
-            return "还没有评价记录喵（用 /et rate good|bad <ID> 评价）"
+            return "还没有评价记录喵（用 /et rate good|bad 评价最近一条转译）"
         lines = [f"评价历史（最近 {len(rows)} 条，倒序）:"]
         for rec in reversed(rows[-20:]):
             tag = {"good": "👍", "bad": "👎", "undo": "↩️"}.get(rec.get("verdict"), "?")

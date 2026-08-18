@@ -1,3 +1,13 @@
 __pycache__/
 *.py[cod]
 *.bak.*
+
+# Secrets and local runtime state
+.env
+.env.*
+state.json
+events.jsonl
+translations.jsonl
+ratings.jsonl
+ratings/
+last_raw.txt

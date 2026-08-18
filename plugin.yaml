@@ -1,0 +1,8 @@
+name: executor-translator
+version: 0.1.0
+description: "执行者-转译者双模型插件：主模型（执行者）只负责推理、输出精炼语义；便宜大碗的转译模型把最终回复改写成猫娘风格。执行者与转译者的 Soul/长期记忆分为两份独立文件；转译者模型在 config.yaml 的 executor_translator.translator 段独立配置（provider/model/base_url/api_key）。支持转译档案、评价与评价快照。"
+author: "雾铃澪 (Kirisuzu Mio)"
+kind: standalone
+hooks:
+  - transform_llm_output
+  - pre_llm_call
